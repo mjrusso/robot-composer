@@ -6,6 +6,9 @@
 (defn reset [a b]
   b)
 
+(defn value? [a]
+  (do (println a) a))
+
 (defn dubstep-limiter
   [agent-state]
   (try
@@ -63,9 +66,11 @@
 
    (if (re-matches #"[0-9]+" arg)
      (Long/parseLong arg))
+   (if (re-matches #"[0-9]+\.[0-9]+" arg)
+     (Double/parseDouble arg))
    (if-let [builtin-fun (resolve (symbol arg))]
      builtin-fun)
-   (if-let [builtin-fun ({"reset" reset} arg)]
+   (if-let [builtin-fun ({"reset" reset "value?" value?} arg)]
      builtin-fun)
    )
   )
@@ -97,7 +102,7 @@
     (doseq [line-in (line-seq rdr)]
       (println " ... debug ... <- " line-in)
       (try
-        (apply dub-update (re-seq #"[\w\+\-\*/]+" line-in))
+        (apply dub-update (re-seq #"[^ \t\r\n]+" line-in))
         (catch Throwable ex
           (println "Caught, cant apply dub-update: " ex)))
       )))
