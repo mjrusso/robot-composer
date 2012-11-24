@@ -24,11 +24,6 @@ int irVal;
 int buttonVal;
 int magButtonVal;
 
-// Messages
-String startMsg;
-String buttonMsg;
-String magButtonMsg;
-
 void setup() {
   // Pin setup
   pinMode(ledPin, OUTPUT);
@@ -56,10 +51,6 @@ void setup() {
   }
 
   Keyboard.begin();
-
-  startMsg = String (">  ");
-  buttonMsg = String("(but)");
-  magButtonMsg = String("(mag)");
 }
 
 void updateSensorVals() {
@@ -68,14 +59,9 @@ void updateSensorVals() {
   magButtonVal = digitalRead(magButtonPin);
 }
 
-void prepareMessage(String &msg) {
-  msg += startMsg;
-  if (buttonVal == LOW) {
-    send(String("wobble + 1"));
-  }
-  if (magButtonVal == LOW) {
-    send(String("wobble reset 1"));
-  }
+void prepareMessage() {
+  if (buttonVal == LOW) send(String("wobble + 1"));
+  if (magButtonVal == LOW) send(String("wobble reset 1"));
 }
 
 void move(int motor, int speed, int direction) {
@@ -121,12 +107,8 @@ void send(const String &msg) {
 }
 
 void loop() {
-  String msg("");
   updateSensorVals();
-  prepareMessage(msg);
-  /* if (msg.length() > 0) { */
-  /*   Serial.println(msg); */
-  /* } */
+  prepareMessage();
   runMotor();
   delay(500);
 }
