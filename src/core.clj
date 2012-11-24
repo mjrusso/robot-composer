@@ -1,4 +1,6 @@
 (ns core
+  (:import [java.io BufferedReader InputStreamReader])
+
   )
 
 
@@ -8,14 +10,14 @@
 
 (defn exec
   []
-  (doseq [_slug_ (repeat true)]
-    (let [input     (read-line)]
-      (println :TODO input)
-      )
-    ))
+  (let [rdr (BufferedReader. (InputStreamReader. System/in))]
+    (doseq [line-in (line-seq rdr)]
+      (println :TODO line-in)
+      )))
 
-(defn restart
-  []
+(defn -main [& args]
   (do
     (setup)
-    (exec)))
+    (println "Running exec")
+    (exec))
+  )
