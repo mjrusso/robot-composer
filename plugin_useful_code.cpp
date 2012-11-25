@@ -106,7 +106,6 @@ public:
     SensorChangeTrigger(int direction, int pcdiff, SensorHistory<HSIZE> &hist)
     : m_dir(direction), m_pcdiff(pcdiff), m_hist(hist)
     {
-        
     };
 
     inline void get_delta_averages(int& out_prev, int& out_next) {
@@ -149,6 +148,30 @@ public:
     };
 };
 
+class LinearDecayingActuatorOutput {
+public:
+    int m_min;
+    int m_max;
+    float m_internal;
+    float m_decay;
+    
+    LinearDecayingActuatorOutput(int min, int max, float decay, float start)
+    : m_min(min), m_max(max), m_internal(start), m_decay(decay)
+    {
+    };
+    
+    // -1 <= val <= 1
+    inline void reset_value(float val) {
+        m_internal = val;
+    };
+
+    inline int tick() {
+        int result = static_cast<int>((m_min + m_max) / 2.0 + (m_max - m_min) / 2.0 * m_internal);
+        m_internal *= m_decay;
+        return result;
+    };
+    
+};
 
 int dump_buf(int size, std::ostream& whatev, int* buf) {
     for (int i = 0; i < size; ++i) {
