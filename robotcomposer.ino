@@ -155,15 +155,19 @@ float linear_map_1s(float val, float range_min, float avg, float range_max,
   }
 };
 
+float absolute(float arg) {
+  return arg < 0? -arg: arg;
+};
+
 float linear_map_01(float val, float range_min, float avg, float range_max,
                     float* params)
 {
   if (val > avg) {
     float delta = 2*(range_max - avg);
-    return min(1.0f, 0.5f + (avg - val) / delta);
+    return min(1.0f, 0.5f + (val - avg) / delta);
   } else {
     float delta = 2*(avg - range_min);
-    return max(0.0f, (val - avg) / delta);
+    return max(0.0f, 0.5f + (val - avg) / delta);
   }
 };
 
@@ -381,7 +385,7 @@ int potentiometerVal;
 //
 AveragingSensor<10> irAvg(irVals);
 TimeStabilizingSensor<10> irStab(irAvg, 5, 1000L*20);
-RelativeSensor<10> irRel(irStab, &exp_map_am, NULL);
+RelativeSensor<10> irRel(irStab, &linear_map_01, NULL);
 
 SensorChangeTrigger<10> irCloser(1, 5, irVals);
 SensorChangeTrigger<10> irFurther(-1, 5, irVals);
@@ -461,14 +465,14 @@ void setup() {
 
 void updateSensorVals(String &logMsg) {
   // Analog
-  int flexValL = map(analogRead(flexPinL), 768, 853, 0, 90);
-  int flexValR = map(analogRead(flexPinR), 768, 853, 0, 90);
+  int flexValL = analogRead(flexPinL);
+  int flexValR = analogRead(flexPinR);
 
   flexValsL.add_point(flexValL);
   flexValsR.add_point(flexValR);
 
-  int photoValL = map(analogRead(photoPinL), 768, 853, 0, 90);
-  int photoValR = map(analogRead(photoPinR), 768, 853, 0, 90);
+  int photoValL = analogRead(photoPinL);
+  int photoValR = analogRead(photoPinR);
 
   photoValsL.add_point(photoValL);
   photoValsR.add_point(photoValR);
@@ -601,32 +605,41 @@ void loop() {
     if (photoLeft.ready()) photoLRel.sample();
     if (photoRight.ready()) photoRRel.sample();
     delay(5);
+    if (irRel.ready())
+      Serial.println("Calibrated, ready to roll!");
+
     return;
   }
 
-  // Flex sensors are bad, so keep sampling
+  irRel.sample();
   flexLRel.sample();
   flexRRel.sample();
+  photoLRel.sample();
+  photoRRel.sample();
 
-      // Serial.println(String("Stabilized IR:"));
-      // Serial.println(String(irStab.get_current_reading()));
-      // Serial.println(String((int) (irRel.get_relative_value() * 1000)));
-      // Serial.println(String("Stabilized Flexleft:"));
-      // Serial.println(String(flexLStab.get_current_reading()));
-      // Serial.println(String((int) (flexLRel.get_relative_value() * 1000)));
-      // Serial.println(String("Stabilized Flexright:"));
-      // Serial.println(String(flexRStab.get_current_reading()));
-      // Serial.println(String((int) (flexRRel.get_relative_value() * 1000)));
-      // Serial.println(String("Stabilized Photoleft:"));
-      // Serial.println(String(photoLStab.get_current_reading()));
-      // Serial.println(String((int) (photoLRel.get_relative_value() * 1000)));
-      // Serial.println(String("Stabilized Photoright:"));
-      // Serial.println(String(photoRStab.get_current_reading()));
-      // Serial.println(String((int) (photoRRel.get_relative_value() * 1000)));
+  // if (clockDiv == 0) {
+  //     Serial.println(String("Stabilized IR:"));
+  //     Serial.println(String(irStab.get_current_reading()));
+  //     Serial.println(String((int) (irRel.get_relative_value() * 1000)));
+  //     Serial.println(String("Stabilized Flexleft:"));
+  //     Serial.println(String(flexLStab.get_current_reading()));
+  //     Serial.println(String((int) (flexLRel.get_relative_value() * 1000)));
+  //     Serial.println(String("Stabilized Flexright:"));
+  //     Serial.println(String(flexRStab.get_current_reading()));
+  //     Serial.println(String((int) (flexRRel.get_relative_value() * 1000)));
+  //     Serial.println(String("Stabilized Photoleft:"));
+  //     Serial.println(String(photoLStab.get_current_reading()));
+  //     Serial.println(String((int) (photoLRel.get_relative_value() * 1000)));
+  //     Serial.println(String("Stabilized Photoright:"));
+  //     Serial.println(String(photoRStab.get_current_reading()));
+  //     Serial.println(String((int) (photoRRel.get_relative_value() * 1000)));
 
-      // Serial.println(String(""));
-      // delay(1000);
-      // return;
+  //     Serial.println(String(""));
+  // }
+  //   clockDiv = (clockDiv + 1) % 200;
+  //     delay(5);
+  //     return;
+
   bool motorKill = magButtonVal == 1;
   bool motorActive = false;
 
@@ -646,14 +659,14 @@ void loop() {
   //if (irAvg.get_average() <= 300) {
     // DO NOTHING
 
-  if (irRel.get_relative_value() > 0.5) {
+  if (irRel.get_relative_value() > 0.7) {
     // if (clockDiv % 30 == 0)
     //   Serial.println("DBUG: Robot moving away (scared)");
     backward();
     if (clockDiv % 30 == 0)
       send(String("bpm + 10"));
     motorActive = true;
-  } else if (irRel.get_relative_value() > 0.26) {
+  } else if (irRel.get_relative_value() < 0.35) {
     // if (clockDiv % 60 == 0)
     //   Serial.println("DBUG: Robot moving closer (attracted)");
     forward();
@@ -662,32 +675,37 @@ void loop() {
     motorActive = true;
   }
 
-  if (abs(flexLRel.get_relative_value()) > 0.7f) {
+  if (absolute(flexLRel.get_relative_value()) > 0.7f) {
     //if (clockDiv % 60 == 0)
     //  Serial.println("DBUG: Robot rotating left!");
 
     rotateLeft();
-    if (clockDiv % 10 == 0)
+    if (clockDiv % 10 == 0){
+      Serial.println(String("SerialL"));
+      Serial.println(String((int) (flexLRel.get_relative_value() * 1000)));
       send(String("wobble - 0.1"));
-
+    }
     motorActive = true;
-  } else if (abs(flexRRel.get_relative_value()) > 0.7f) {
+  } else if (absolute(flexRRel.get_relative_value()) > 0.7f) {
     //if (clockDiv % 60 == 0)
     //  Serial.println("DBUG: Robot rotating right!");
 
     rotateRight();
-    if (clockDiv % 10 == 0)
-      send(String("wobble + 0.1"));
+    if (clockDiv % 10 == 0) {
+      Serial.println(String("SerialR"));
+      Serial.println(String((int)(flexRRel.get_relative_value()* 1000)));
 
+      send(String("wobble + 0.1"));
+    }
     motorActive = true;
   }
 
-  if (photoLRel.get_relative_value() < -0.4) {
+  if (abs(photoLRel.get_relative_value()) > 0.6f) {
     if (clockDiv % 10 == 0)
         send(String("note - 0.4"));
   }
 
-  if (photoRRel.get_relative_value() < -0.4) {
+  if (abs(photoRRel.get_relative_value()) > 0.6f) {
     if (clockDiv % 10 == 0)
         send(String("note + 0.4"));
   }
