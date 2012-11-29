@@ -1,5 +1,7 @@
 #include <Servo.h>
 
+#define MY_MAX_INT 1024
+#define MY_MIN_INT -1024
 
 template<int HSIZE>
 class SensorHistory {
@@ -71,6 +73,10 @@ public:
     : m_hist(hist)
     {};
 
+  inline bool ready() {
+    return m_hist.ready();
+  };
+
     inline int get_average() {
         int baseline = m_hist.data[0];
         if (m_hist.ready()) {
@@ -84,6 +90,131 @@ public:
         }
     };
 };
+
+
+template<int HSIZE>
+class TimeStabilizingSensor {
+public:
+    AveragingSensor<HSIZE>& m_sensor;
+    int m_clockIAt;
+    long m_stabilize;
+    long m_samples;
+    float m_data;
+    int m_max;
+    int m_min;
+
+    TimeStabilizingSensor(AveragingSensor<HSIZE>& sense, int clockIAt,
+                          long stabilize_time)
+      :
+      m_sensor(sense), m_clockIAt(clockIAt), m_stabilize(stabilize_time),
+      m_samples(0), m_data(0.0), m_max(MY_MIN_INT), m_min(MY_MAX_INT)
+    {
+    };
+
+    void sample() {
+        int sampl = m_sensor.get_average();
+        if (this->ready())
+          this->m_samples -= 1;
+
+        this->m_data = ((float)(sampl + (this->m_data) * (this->m_samples)))
+          / (++(this->m_samples));
+        if (sampl > this->m_max)
+            this->m_max = sampl;
+        if (sampl < this->m_min)
+            this->m_min = sampl;
+    };
+
+    int get_stable_reading() { return this->m_data; };
+    int get_current_reading() { return m_sensor.get_average(); };
+
+    int get_max_reading() {return this->m_max; };
+    int get_min_reading() {return this->m_min; };
+
+
+    int get_average() { return this->m_data; };
+    bool ready() {
+        return m_sensor.ready() && (this->m_samples * m_clockIAt >= m_stabilize);
+    };
+
+    void reset() {
+        this->m_data = 0;
+        this->m_samples = 0;
+    };
+
+};
+
+float linear_map_1s(float val, float range_min, float avg, float range_max,
+                    float* params)
+{
+  if (val > avg) {
+    float r_size  = (range_max - avg);
+    return min(1.0f, (val - avg) / r_size);
+  } else {
+    float r_size  = (avg - range_min);
+    return max(-1.0f, (val - avg) / r_size);
+  }
+};
+
+float linear_map_01(float val, float range_min, float avg, float range_max,
+                    float* params)
+{
+  if (val > avg) {
+    float delta = 2*(range_max - avg);
+    return min(1.0f, 0.5f + (avg - val) / delta);
+  } else {
+    float delta = 2*(avg - range_min);
+    return max(0.0f, (val - avg) / delta);
+  }
+};
+
+float exp_map_am(float val, float range_min, float avg, float range_max,
+                 float* params)
+{
+  float dx = range_max - range_min;
+  float thresh = 0.05f;
+  float lambda = -(log(thresh))/dx;
+  return exp(- lambda * (range_max - val));
+};
+
+float log_map_am(float val, float range_min, float avg, float range_max,
+                 float* params)
+{
+  float lambda = - log(0.05);
+  float y = (range_max - val) / (range_max - range_min);
+  return -log(y) / lambda;
+};
+
+typedef float sensor_transform_t (float, float, float, float, float*);
+
+template<int HSIZE>
+class RelativeSensor {
+public:
+    TimeStabilizingSensor<HSIZE>& m_sensor;
+    sensor_transform_t* m_transform;
+    float* m_fparams;
+
+    RelativeSensor(TimeStabilizingSensor<HSIZE>& sense, sensor_transform_t* trans, float* extra_params)
+        : m_sensor(sense), m_transform(trans), m_fparams(extra_params)
+    {
+    };
+
+  void sample() {
+    return m_sensor.sample();
+  }
+
+    bool ready() {
+        return m_sensor.ready();
+    };
+
+    float get_relative_value() {
+       return (*m_transform) (m_sensor.get_current_reading(),
+                              m_sensor.get_min_reading(),
+                              m_sensor.get_average(),
+                              m_sensor.get_max_reading(),
+                              m_fparams);
+    };
+};
+
 
 template<int HSIZE>
 class AvgTrigger {
@@ -172,14 +303,15 @@ public:
     float m_internal;
     float m_decay;
 
-    LinearDecayingActuatorOutput(int min, int max, float decay, float start)
-    : m_min(min), m_max(max), m_internal(start), m_decay(decay)
+    LinearDecayingActuatorOutput(int min, int max, float start)
+    : m_min(min), m_max(max), m_internal(start), m_decay(0)
     {
     };
 
     // -1 <= val <= 1
-    inline void reset_value(float val) {
+  inline void reset_value(float val, float decay) {
         m_internal = val;
+        m_decay = 0;
     };
 
     inline int tick() {
@@ -190,6 +322,8 @@ public:
         m_internal *= m_decay;
         if (m_internal > 1.0)
             m_internal = 1.0;
+        if (m_internal < -1.0)
+          m_internal = -1.0;
         return result;
     };
 
@@ -246,23 +380,46 @@ int potentiometerVal;
 // Action condition triggers
 //
 AveragingSensor<10> irAvg(irVals);
+TimeStabilizingSensor<10> irStab(irAvg, 5, 1000L*20);
+RelativeSensor<10> irRel(irStab, &exp_map_am, NULL);
+
 SensorChangeTrigger<10> irCloser(1, 5, irVals);
 SensorChangeTrigger<10> irFurther(-1, 5, irVals);
 
 AveragingSensor<10> flexLeft(flexValsL);
-AvgTrigger<10> flexLBent(-150, 20, flexLeft);
+TimeStabilizingSensor<10> flexLStab(flexLeft ,5, 1000L*20);
+RelativeSensor<10> flexLRel(flexLStab, &linear_map_1s, NULL);
 
 AveragingSensor<10> flexRight(flexValsR);
-AvgTrigger<10> flexRBent(-180, 20, flexRight);
+TimeStabilizingSensor<10> flexRStab(flexRight, 5, 1000L*20);
+RelativeSensor<10> flexRRel(flexRStab, &linear_map_1s, NULL);
 
 AveragingSensor<10> photoRight(photoValsR);
-AvgTrigger<10> photoRTrigger(-550, 17, photoRight);
+TimeStabilizingSensor<10> photoRStab(photoRight, 5, 1000L*20);
+RelativeSensor<10> photoRRel(photoRStab, &linear_map_1s, NULL);
 
 AveragingSensor<10> photoLeft(photoValsL);
+TimeStabilizingSensor<10> photoLStab(photoLeft, 5, 1000L*20);
+RelativeSensor<10> photoLRel(photoLStab, &linear_map_1s, NULL);
+
+AvgTrigger<10> flexRBent(-180, 20, flexRight);
+AvgTrigger<10> flexLBent(-150, 20, flexLeft);
+AvgTrigger<10> photoRTrigger(-550, 17, photoRight);
 AvgTrigger<10> photoLTrigger(-550, 17, photoLeft);
 
  //... TODO: and rest
 
+LinearDecayingActuatorOutput motor_left(-150, 150, 0);
+LinearDecayingActuatorOutput motor_right(-150, 150, 0);
+
+void engines() {
+  int leftMotor = motor_left.tick();
+  int rightMotor = motor_right.tick();
+  int leftDir = leftMotor > 0? 1 : 2;
+  int rightDir = rightMotor > 0? 2 : 1;
+  move(1, abs(leftMotor), leftDir);
+  move(2, abs(rightMotor), rightDir);
+}
 
 // Servo setup
 Servo servoL;
@@ -398,44 +555,83 @@ void send(const String &msg) {
 
 
 void forward() {
-  move(1, 150, 2);
-  move(2, 150, 1);
+  // move(1, 150, 1);
+  // move(2, 150, 2);
+  motor_left.reset_value(1, 0.9995);
+  motor_right.reset_value(1, 0.9995);
 };
 
 void backward() {
-  move(1, 150, 1);
-  move(2, 150, 2);
+  // move(1, 150, 2);
+  // move(2, 150, 1);
+  motor_left.reset_value(-1, 0.9995);
+  motor_right.reset_value(-1, 0.999);
 };
 
 void rotateLeft() {
-  move(1, 150, 1);
-  move(2, 150, 1);
+  motor_left.reset_value(1, 0.9995);
+  motor_right.reset_value(-1, 0.9995);
+
+  // move(1, 150, 1);
+  // move(2, 150, 1);
 };
 
 void rotateRight() {
-  move(1, 150, 2);
-  move(2, 150, 2);
+  motor_left.reset_value(-1, 0.9995);
+  motor_right.reset_value(1, 0.9995);
+  // move(1, 150, 2);
+  // move(2, 150, 2);
 };
 
+
+int clockDiv = 0;
 void loop() {
   String logMsg = "";
   updateSensorVals(logMsg);
   // Ensure all sensors have warmed-up buffers of readings
-  bool shortloop = !(irVals.ready()
+  bool shortloop = !(irRel.ready()
                      //&& flexVals1.ready() && flexVals2.ready()
                      //    && photo1.ready() && photo2.ready()
     );
 
   if (shortloop) {
+    if (irAvg.ready()) irRel.sample();
+    if (flexLeft.ready()) flexLRel.sample();
+    if (flexRight.ready()) flexRRel.sample();
+    if (photoLeft.ready()) photoLRel.sample();
+    if (photoRight.ready()) photoRRel.sample();
     delay(5);
     return;
   }
 
+  // Flex sensors are bad, so keep sampling
+  flexLRel.sample();
+  flexRRel.sample();
+
+      // Serial.println(String("Stabilized IR:"));
+      // Serial.println(String(irStab.get_current_reading()));
+      // Serial.println(String((int) (irRel.get_relative_value() * 1000)));
+      // Serial.println(String("Stabilized Flexleft:"));
+      // Serial.println(String(flexLStab.get_current_reading()));
+      // Serial.println(String((int) (flexLRel.get_relative_value() * 1000)));
+      // Serial.println(String("Stabilized Flexright:"));
+      // Serial.println(String(flexRStab.get_current_reading()));
+      // Serial.println(String((int) (flexRRel.get_relative_value() * 1000)));
+      // Serial.println(String("Stabilized Photoleft:"));
+      // Serial.println(String(photoLStab.get_current_reading()));
+      // Serial.println(String((int) (photoLRel.get_relative_value() * 1000)));
+      // Serial.println(String("Stabilized Photoright:"));
+      // Serial.println(String(photoRStab.get_current_reading()));
+      // Serial.println(String((int) (photoRRel.get_relative_value() * 1000)));
+
+      // Serial.println(String(""));
+      // delay(1000);
+      // return;
   bool motorKill = magButtonVal == 1;
   bool motorActive = false;
 
   if (buttonVal == 0) {
-    //Serial.println("Reset!");
+    Serial.println("Reset!");
     send(String("v println"));
   }
 
@@ -449,53 +645,107 @@ void loop() {
 
   //if (irAvg.get_average() <= 300) {
     // DO NOTHING
+
+  if (irRel.get_relative_value() > 0.5) {
+    // if (clockDiv % 30 == 0)
+    //   Serial.println("DBUG: Robot moving away (scared)");
+    backward();
+    if (clockDiv % 30 == 0)
+      send(String("bpm + 10"));
+    motorActive = true;
+  } else if (irRel.get_relative_value() > 0.26) {
+    // if (clockDiv % 60 == 0)
+    //   Serial.println("DBUG: Robot moving closer (attracted)");
+    forward();
+    if (clockDiv % 30 == 0)
+      send(String("bpm - 10"));
+    motorActive = true;
+  }
+
+  if (abs(flexLRel.get_relative_value()) > 0.7f) {
+    //if (clockDiv % 60 == 0)
+    //  Serial.println("DBUG: Robot rotating left!");
+
+    rotateLeft();
+    if (clockDiv % 10 == 0)
+      send(String("wobble - 0.1"));
+
+    motorActive = true;
+  } else if (abs(flexRRel.get_relative_value()) > 0.7f) {
+    //if (clockDiv % 60 == 0)
+    //  Serial.println("DBUG: Robot rotating right!");
+
+    rotateRight();
+    if (clockDiv % 10 == 0)
+      send(String("wobble + 0.1"));
+
+    motorActive = true;
+  }
+
+  if (photoLRel.get_relative_value() < -0.4) {
+    if (clockDiv % 10 == 0)
+        send(String("note - 0.4"));
+  }
+
+  if (photoRRel.get_relative_value() < -0.4) {
+    if (clockDiv % 10 == 0)
+        send(String("note + 0.4"));
+  }
+
+/*
   if (irCloser.is_active()) {
-    Serial.println("DBUG: Robot moving away (scared)");
+    //Serial.println("DBUG: Robot moving away (scared)");
     forward();
     send(String("bpm - 10"));
     motorActive = true;
   } else if (irFurther.is_active()) {
-    Serial.println("DBUG: Robot moving closer (attracted)");
+    //Serial.println("DBUG: Robot moving closer (attracted)");
     send(String("bpm + 10"));
     backward();
     motorActive = true;
   }
+*/
 
-  if (flexLBent.is_active()) {
-    send(String("wobble + 0.1"));
-    Serial.println("DBUG: FlexLeft! ");
-    Serial.println(String(flexLeft.get_average()));
-    rotateLeft();
-    motorActive = true;
-  } else if (flexRBent.is_active()) {
-    send(String("wobble - 0.1"));
-    Serial.println("DBUG: FlexRight! ");
-    Serial.println(String(flexRight.get_average()));
-    Serial.println(String(photoLeft.get_average()));
-    Serial.println(String(photoRight.get_average()));
-    rotateRight();
-    motorActive = true;
-  }
+  // if (flexLBent.is_active()) {
+  //   send(String("wobble + 0.1"));
+  //   Serial.println("DBUG: FlexLeft! ");
+  //   Serial.println(String(flexLeft.get_average()));
+  //   rotateLeft();
+  //   motorActive = true;
+  // } else if (flexRBent.is_active()) {
+  //   send(String("wobble - 0.1"));
+  //   Serial.println("DBUG: FlexRight! ");
+  //   Serial.println(String(flexRight.get_average()));
+  //   Serial.println(String(photoLeft.get_average()));
+  //   Serial.println(String(photoRight.get_average()));
+  //   rotateRight();
+  //   motorActive = true;
+  // }
 
-  if (photoLTrigger.is_active()) {
-    Serial.println("DBUG: PhotoLeft! ");
-    Serial.println(String(photoLeft.get_average()));
-    send(String("note + 0.1"));
-  }
+  // if (photoLTrigger.is_active()) {
+  //   Serial.println("DBUG: PhotoLeft! ");
+  //   Serial.println(String(photoLeft.get_average()));
+  //   send(String("note + 0.1"));
+  // }
 
-  if (photoRTrigger.is_active()) {
-    send(String("note - 0.1"));
-    Serial.println("DBUG: PhotoRight! ");
-    Serial.println(String(photoRight.get_average()));
-  }
+  // if (photoRTrigger.is_active()) {
+  //   send(String("note - 0.1"));
+  //   Serial.println("DBUG: PhotoRight! ");
+  //   Serial.println(String(photoRight.get_average()));
+  // }
 
-  if (motorKill || !motorActive)
+  if (motorKill)
     stopMotors();
+  else
+    engines();
+
 
   //Serial.println(photoLeft.get_average());
   //prepareMessage();
   //runMotor();
   //moveServo();
   //Serial.println(logMsg);
+  clockDiv = (clockDiv + 1) % 200;
   delay(5);
+
 }
